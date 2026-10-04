@@ -1,6 +1,6 @@
 import { u } from '../localizedFormat/utils'
 
-const formattingTokens = /(\[[^[]*\])|([-_:/.,()\s]+)|(A|a|YYYY|YY?|MM?M?M?|Do|DD?|hh?|HH?|mm?|ss?|S{1,3}|z|ZZ?)/g
+const formattingTokens = /(\[[^[]*\])|([-_:/.,()\s]+)|(A|a|YYYY|YY?|MM?M?M?|Do|DD?|hh?|HH?|mm?|ss?|S{1,3}|z|ZZ?|Q|w{1,2})/g
 
 const match1 = /\d/ // 0 - 9
 const match2 = /\d\d/ // 00 - 99
@@ -30,6 +30,85 @@ const addInput = function (property) {
   return function (input) {
     this[property] = +input
   }
+}
+
+// Calendar-only replica of the weekOfYear plugin, so week tokens can be
+// parsed even when weekOfYear is not extended. Uses UTC fields purely for
+// day/month arithmetic, hence the result is independent of the host TZ.
+const DAY_MS = 24 * 60 * 60 * 1000
+
+const utcDate = (year, month, day) => new Date(Date.UTC(year, month, day))
+
+const startOfWeekDay = (year, month, day, weekStart) => {
+  const weekday = utcDate(year, month, day).getUTCDay()
+  const gap = (weekday < weekStart ? weekday + 7 : weekday) - weekStart
+  const d = utcDate(year, month, day - gap)
+  return [d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()]
+}
+
+// Mirrors proto.week() in src/plugin/weekOfYear/index.js
+const weekOfYear = (year, month, day, weekStart, yearStart) => {
+  if (month === 11 && day > 25) {
+    const endOfWeek = utcDate(...startOfWeekDay(year, month, day, weekStart))
+    endOfWeek.setUTCDate(endOfWeek.getUTCDate() + 6)
+    endOfWeek.setUTCHours(23, 59, 59, 999)
+    if (utcDate(year + 1, 0, yearStart) < endOfWeek) {
+      return 1
+    }
+  }
+  const anchor = utcDate(...startOfWeekDay(year, 0, yearStart, weekStart)).getTime() - 1
+  const diffInWeek = (utcDate(year, month, day).getTime() - anchor) / (7 * DAY_MS)
+  if (diffInWeek < 0) {
+    return weekOfYear(...startOfWeekDay(year, month, day, weekStart), weekStart, yearStart)
+  }
+  return Math.ceil(diffInWeek)
+}
+
+// Inverse of weekOfYear: first day (in the locale's week grid) of week n of
+// the given year. Falls back to Jan 1st when that day itself belongs to a
+// leftover week of the previous year (e.g. week 53). Returns null when the
+// year has no week n.
+const dayFromWeek = (year, n, weekStart, yearStart) => {
+  const toParts = dt => ({
+    year: dt.getUTCFullYear(),
+    month: dt.getUTCMonth(),
+    day: dt.getUTCDate()
+  })
+  const firstWeekStart = startOfWeekDay(year, 0, yearStart, weekStart)
+  const candidate = utcDate(...firstWeekStart)
+  candidate.setUTCDate(candidate.getUTCDate() + ((n - 1) * 7))
+  let parts = toParts(candidate)
+  if (parts.year < year) {
+    // The first week of the year starts in the previous December.
+    parts = weekOfYear(year, 0, 1, weekStart, yearStart) === 1
+      ? { year, month: 0, day: 1 }
+      : { year, month: 0, day: yearStart }
+  } else if (parts.year > year) {
+    // n would be the first week of the next year: try the previous grid week.
+    const previous = utcDate(parts.year, parts.month, parts.day)
+    previous.setUTCDate(previous.getUTCDate() - 7)
+    const previousParts = toParts(previous)
+    if (previousParts.year === year &&
+      weekOfYear(
+        previousParts.year, previousParts.month, previousParts.day,
+        weekStart, yearStart
+      ) === n) {
+      parts = previousParts
+    } else if (weekOfYear(year, 0, 1, weekStart, yearStart) === n) {
+      parts = { year, month: 0, day: 1 }
+    } else {
+      parts = null
+    }
+  }
+  if (!parts) return null
+  if (parts.year !== year ||
+    weekOfYear(
+      parts.year, parts.month, parts.day,
+      weekStart, yearStart
+    ) !== n) {
+    return null
+  }
+  return parts
 }
 
 const zoneExpressions = [matchOffset, function (input) {
@@ -119,6 +198,11 @@ const expressions = {
     this.year = parseTwoDigitYear(input)
   }],
   YYYY: [match4, addInput('year')],
+  Q: [match1, function (input) {
+    this.quarter = +input
+  }],
+  w: [match1to2, addInput('week')],
+  ww: [match2, addInput('week')],
   Z: zoneExpressions,
   ZZ: zoneExpressions
 }
@@ -178,14 +262,45 @@ const parseFormattedInput = (input, format, utc) => {
     if (['x', 'X'].indexOf(format) > -1) return new Date((format === 'X' ? 1000 : 1) * input)
     const parser = makeParser(format)
     const {
-      year, month, day, hours, minutes, seconds, milliseconds, zone
+      year, month, day, quarter, week, hours, minutes, seconds, milliseconds, zone
     } = parser(input)
+    // A quarter is described by its month range and conflicts with weeks.
+    if (quarter !== undefined) {
+      if (week !== undefined || quarter < 1 || quarter > 4) {
+        throw new Error()
+      }
+      if (month !== undefined && (month < 1 || month > 12 ||
+        Math.floor((month - 1) / 3) + 1 !== quarter)) {
+        throw new Error()
+      }
+    }
+    // A week already pins down a calendar day, so month/day tokens clash.
+    if (week !== undefined && (month !== undefined || day !== undefined)) {
+      throw new Error()
+    }
     const now = new Date()
-    const d = day || ((!year && !month) ? now.getDate() : 1)
-    const y = year || now.getFullYear()
+    let d = day
+    let y = year
     let M = 0
-    if (!(year && !month)) {
-      M = month > 0 ? month - 1 : now.getMonth()
+    if (week !== undefined) {
+      const weekStart = (locale.weekStart) || 0
+      const yearStart = locale.yearStart || 1
+      y = year || now.getFullYear()
+      const weekDay = dayFromWeek(y, week, weekStart, yearStart)
+      if (!weekDay) {
+        throw new Error()
+      }
+      M = weekDay.month
+      d = weekDay.day
+    } else {
+      d = day || ((!year && !month) ? now.getDate() : 1)
+      y = year || now.getFullYear()
+      if (!(year && !month)) {
+        M = month > 0 ? month - 1 : now.getMonth()
+      }
+      if (quarter !== undefined && month === undefined) {
+        M = (quarter - 1) * 3
+      }
     }
     const h = hours || 0
     const m = minutes || 0

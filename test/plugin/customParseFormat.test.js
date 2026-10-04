@@ -4,12 +4,16 @@ import dayjs from '../../src'
 import '../../src/locale/ru'
 import uk from '../../src/locale/uk'
 import '../../src/locale/zh-cn'
+import '../../src/locale/de'
 import customParseFormat from '../../src/plugin/customParseFormat'
 import advancedFormat from '../../src/plugin/advancedFormat'
 import localizedFormats from '../../src/plugin/localizedFormat'
+import weekOfYear from '../../src/plugin/weekOfYear'
 
 dayjs.extend(customParseFormat)
 dayjs.extend(localizedFormats)
+dayjs.extend(advancedFormat)
+dayjs.extend(weekOfYear)
 
 beforeEach(() => {
   MockDate.set(new Date())
@@ -436,4 +440,156 @@ it('parse X x', () => {
   // x X starct parse requires advancedFormat plugin
   dayjs.extend(advancedFormat)
   expect(dayjs(input2, format2, true).valueOf()).toBe(moment(input2, format2, true).valueOf())
+})
+
+describe('quarter token Q', () => {
+  it('lands on the first day of the quarter', () => {
+    expect(dayjs('2024 1', 'YYYY Q').format('YYYY-MM-DD')).toBe('2024-01-01')
+    expect(dayjs('2024 2', 'YYYY Q').format('YYYY-MM-DD')).toBe('2024-04-01')
+    expect(dayjs('2024 3', 'YYYY Q').format('YYYY-MM-DD')).toBe('2024-07-01')
+    expect(dayjs('2024 4', 'YYYY Q').format('YYYY-MM-DD')).toBe('2024-10-01')
+  })
+  it('out of range is invalid in lax and strict mode', () => {
+    expect(dayjs('2024 0', 'YYYY Q').isValid()).toBe(false)
+    expect(dayjs('2024 5', 'YYYY Q').isValid()).toBe(false)
+    expect(dayjs('2024 0', 'YYYY Q', true).isValid()).toBe(false)
+    expect(dayjs('2024 5', 'YYYY Q', true).isValid()).toBe(false)
+  })
+  it('roundtrips through format in strict mode', () => {
+    [1, 2, 3, 4].forEach((q) => {
+      const text = `2024 ${q}`
+      expect(dayjs(text, 'YYYY Q', true).format('YYYY Q')).toBe(text)
+    })
+  })
+  it('mixes with a day token', () => {
+    expect(dayjs('2024 3 15', 'YYYY Q D').format('YYYY-MM-DD')).toBe('2024-07-15')
+  })
+  it('mixes with a month token only when the month belongs to the quarter', () => {
+    expect(dayjs('2024 3 08', 'YYYY Q MM').format('YYYY-MM-DD')).toBe('2024-08-01')
+    expect(dayjs('2024 3 05', 'YYYY Q MM').isValid()).toBe(false)
+    expect(dayjs('2024 3 05', 'YYYY Q MM', true).isValid()).toBe(false)
+    expect(dayjs('2024 3 13', 'YYYY Q MM').isValid()).toBe(false)
+  })
+  it('conflicts with a week token', () => {
+    expect(dayjs('2024 3 10', 'YYYY Q w').isValid()).toBe(false)
+    expect(dayjs('2024 3 10', 'YYYY Q w', true).isValid()).toBe(false)
+  })
+  it('matches moment on the basic case', () => {
+    const input = '2024 3'
+    const format = 'YYYY Q'
+    expect(dayjs(input, format).valueOf()).toBe(moment(input, format).valueOf())
+    expect(dayjs(input, format, true).valueOf()).toBe(moment(input, format, true).valueOf())
+  })
+})
+
+describe('week tokens w / ww', () => {
+  it('lands on the first day of the week (en, weeks start on Sunday)', () => {
+    expect(dayjs('2024 10', 'YYYY w', 'en').format('YYYY-MM-DD dddd')).toBe('2024-03-03 Sunday')
+    // the grid start of week 1 is 2023-12-31, but that formats as '2023 1';
+    // roundtrip pins the result to the first in-year day of week 1
+    expect(dayjs('2024 01', 'YYYY ww', 'en').format('YYYY-MM-DD')).toBe('2024-01-01')
+  })
+  it('lands on the first day of the week (de / zh-cn, weeks start on Monday)', () => {
+    expect(dayjs('2024 10', 'YYYY w', 'de').format('YYYY-MM-DD')).toBe('2024-03-04')
+    expect(dayjs('2024 10', 'YYYY w', 'zh-cn').format('YYYY-MM-DD')).toBe('2024-03-04')
+    expect(dayjs('2024 01', 'YYYY ww', 'de').format('YYYY-MM-DD')).toBe('2024-01-01')
+  })
+  it('does not require the weekOfYear plugin and never throws', () => {
+    // make sure every locale module is registered before resetting the cache
+    moment.locale('de')
+    moment.locale('zh-cn')
+    jest.resetModules()
+    // eslint-disable-next-line global-require
+    const freshDayjs = require('../../src').default
+    // eslint-disable-next-line global-require
+    const freshMoment = require('moment')
+    // eslint-disable-next-line global-require
+    const freshCustomParseFormat = require('../../src/plugin/customParseFormat').default
+    freshDayjs.extend(freshCustomParseFormat)
+    expect(() => freshDayjs('2024 10', 'YYYY w')).not.toThrow()
+    expect(() => freshDayjs('2024 01', 'YYYY ww')).not.toThrow()
+    const parsed = freshDayjs('2024 10', 'YYYY w')
+    expect(parsed.isValid()).toBe(true)
+    expect(parsed.format('YYYY-MM-DD')).toBe('2024-03-03')
+    // re-register locales on the fresh module instances used later
+    // eslint-disable-next-line global-require
+    require('../../src/locale/de')
+    // eslint-disable-next-line global-require
+    require('../../src/locale/zh-cn')
+    freshMoment.locale('de')
+    freshMoment.locale('zh-cn')
+    dayjs.locale('en')
+    moment.locale('en')
+  })
+  it('week out of range is invalid in lax and strict mode', () => {
+    expect(dayjs('2024 0', 'YYYY w').isValid()).toBe(false)
+    expect(dayjs('2024 54', 'YYYY w').isValid()).toBe(false)
+    expect(dayjs('2024 53', 'YYYY w', 'en').isValid()).toBe(false) // 2024 has 52 weeks in en
+    expect(dayjs('2024 53', 'YYYY w', 'de').isValid()).toBe(false) // and in de / zh-cn
+    expect(dayjs('2024 53', 'YYYY w', 'zh-cn').isValid()).toBe(false)
+    expect(dayjs('2024 0', 'YYYY w', true).isValid()).toBe(false)
+    expect(dayjs('2024 54', 'YYYY w', true).isValid()).toBe(false)
+  })
+  it('accepts week 53 when the year actually has one', () => {
+    expect(dayjs('2016 53', 'YYYY w', 'en').format('YYYY w')).toBe('2016 53')
+    expect(dayjs('2016 53', 'YYYY w', 'en').format('YYYY-MM-DD')).toBe('2016-12-25')
+    expect(dayjs('2015 53', 'YYYY w', 'de').format('YYYY w')).toBe('2015 53')
+    expect(dayjs('2020 53', 'YYYY w', 'zh-cn').format('YYYY w')).toBe('2020 53')
+    // leftover days in early January carry the previous year's week number
+    expect(dayjs('2016 53', 'YYYY w', 'de').format('YYYY w')).toBe('2016 53')
+    expect(dayjs('2016 53', 'YYYY w', 'de').format('YYYY-MM-DD')).toBe('2016-01-01')
+  })
+  it('week 1 across year boundaries roundtrips', () => {
+    expect(dayjs('2018 1', 'YYYY w', 'en').format('YYYY w')).toBe('2018 1') // late Dec days in en
+    expect(dayjs('2019 1', 'YYYY w', 'zh-cn').format('YYYY w')).toBe('2019 1')
+    expect(dayjs('2024 1', 'YYYY w', 'de').format('YYYY w')).toBe('2024 1')
+  })
+  it('ww requires padding in strict mode', () => {
+    expect(dayjs('2024 1', 'YYYY ww').isValid()).toBe(false)
+    expect(dayjs('2024 1', 'YYYY ww', true).isValid()).toBe(false)
+    expect(dayjs('2024 01', 'YYYY ww', true).format('YYYY ww')).toBe('2024 01')
+    expect(dayjs('2024 10', 'YYYY ww', true).format('YYYY ww')).toBe('2024 10')
+  })
+  it('w accepts unpadded numbers', () => {
+    expect(dayjs('2024 1', 'YYYY w').isValid()).toBe(true)
+    expect(dayjs('2024 10', 'YYYY w').isValid()).toBe(true)
+  })
+  it('conflicts with month, day or quarter tokens', () => {
+    expect(dayjs('2024 10 2', 'YYYY w M').isValid()).toBe(false)
+    expect(dayjs('2024 10 15', 'YYYY w D').isValid()).toBe(false)
+    expect(dayjs('2024 10 2', 'YYYY w Q').isValid()).toBe(false)
+    expect(dayjs('2024 10 2', 'YYYY w M', true).isValid()).toBe(false)
+    expect(dayjs('2024 10 15', 'YYYY w D', true).isValid()).toBe(false)
+  })
+  it('can be combined with time tokens', () => {
+    const parsed = dayjs('2024 10 13:30', 'YYYY w HH:mm', 'de')
+    expect(parsed.format('YYYY-MM-DD HH:mm')).toBe('2024-03-04 13:30')
+  })
+  it('roundtrips for every day of a year under en / de / zh-cn', () => {
+    const locales = ['en', 'de', 'zh-cn']
+    const years = [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2023, 2024]
+    locales.forEach((lo) => {
+      years.forEach((year) => {
+        for (let month = 0; month < 12; month += 1) {
+          const daysInMonth = new Date(year, month + 1, 0).getDate()
+          for (let date = 1; date <= daysInMonth; date += 1) {
+            const src = dayjs(new Date(year, month, date)).locale(lo)
+            const formats = ['YYYY w', 'YYYY ww']
+            formats.forEach((fmt) => {
+              const text = src.format(fmt)
+              const parsed = dayjs(text, fmt, lo)
+              expect(parsed.isValid()).toBe(true)
+              expect(parsed.format(fmt)).toBe(text)
+            })
+          }
+        }
+      })
+    })
+  })
+  it('agrees with moment on a regular mid-year week', () => {
+    const input = '2024 10'
+    const format = 'YYYY w'
+    expect(dayjs(input, format, 'en').valueOf()).toBe(moment(input, format, 'en').valueOf())
+    expect(dayjs(input, format, 'de').valueOf()).toBe(moment(input, format, 'de').valueOf())
+  })
 })

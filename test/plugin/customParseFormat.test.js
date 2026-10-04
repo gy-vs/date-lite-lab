@@ -4,12 +4,15 @@ import dayjs from '../../src'
 import '../../src/locale/ru'
 import uk from '../../src/locale/uk'
 import '../../src/locale/zh-cn'
+import '../../src/locale/de'
 import customParseFormat from '../../src/plugin/customParseFormat'
 import advancedFormat from '../../src/plugin/advancedFormat'
 import localizedFormats from '../../src/plugin/localizedFormat'
+import weekOfYear from '../../src/plugin/weekOfYear'
 
 dayjs.extend(customParseFormat)
 dayjs.extend(localizedFormats)
+dayjs.extend(weekOfYear)
 
 beforeEach(() => {
   MockDate.set(new Date())
@@ -436,4 +439,158 @@ it('parse X x', () => {
   // x X starct parse requires advancedFormat plugin
   dayjs.extend(advancedFormat)
   expect(dayjs(input2, format2, true).valueOf()).toBe(moment(input2, format2, true).valueOf())
+})
+
+describe('parse quarter Q', () => {
+  it('parses quarter to the first day of the quarter', () => {
+    expect(dayjs('2024 1', 'YYYY Q').format('YYYY-MM-DD')).toBe('2024-01-01')
+    expect(dayjs('2024 2', 'YYYY Q').format('YYYY-MM-DD')).toBe('2024-04-01')
+    expect(dayjs('2024 3', 'YYYY Q').format('YYYY-MM-DD')).toBe('2024-07-01')
+    expect(dayjs('2024 4', 'YYYY Q').format('YYYY-MM-DD')).toBe('2024-10-01')
+  })
+
+  it('parses quarter like moment', () => {
+    const quarters = [1, 2, 3, 4]
+    quarters.forEach((quarter) => {
+      const input = `2024 ${quarter}`
+      expect(dayjs(input, 'YYYY Q').valueOf()).toBe(moment(input, 'YYYY Q').valueOf())
+    })
+  })
+
+  it('parses quarter with literal text', () => {
+    expect(dayjs('2024 3 季度', 'YYYY Q 季度').format('YYYY-MM-DD')).toBe('2024-07-01')
+    expect(dayjs('2024 3 季度', 'YYYY Q 季度', true).isValid()).toBe(true)
+    expect(dayjs('2024 3季度', 'YYYY Q[季度]').format('YYYY-MM-DD')).toBe('2024-07-01')
+  })
+
+  it('invalid quarter returns Invalid Date in both modes', () => {
+    expect(dayjs('2024 0', 'YYYY Q').isValid()).toBe(false)
+    expect(dayjs('2024 5', 'YYYY Q').isValid()).toBe(false)
+    expect(dayjs('2024 0', 'YYYY Q', true).isValid()).toBe(false)
+    expect(dayjs('2024 5', 'YYYY Q', true).isValid()).toBe(false)
+  })
+
+  it('quarter combined with other tokens', () => {
+    expect(dayjs('2024 3 15', 'YYYY Q D').format('YYYY-MM-DD')).toBe('2024-07-15')
+    // the last token setting the month wins, like moment
+    expect(dayjs('2024 3 5', 'YYYY Q M').format('YYYY-MM-DD')).toBe('2024-05-01')
+    expect(dayjs('2024 5 3', 'YYYY M Q').format('YYYY-MM-DD')).toBe('2024-07-01')
+    expect(dayjs('2024 3 15', 'YYYY Q D').valueOf()).toBe(moment('2024 3 15', 'YYYY Q D').valueOf())
+    expect(dayjs('2024 3 5', 'YYYY Q M').valueOf()).toBe(moment('2024 3 5', 'YYYY Q M').valueOf())
+    expect(dayjs('2024 5 3', 'YYYY M Q').valueOf()).toBe(moment('2024 5 3', 'YYYY M Q').valueOf())
+  })
+
+  it('strict mode', () => {
+    expect(dayjs('2024 3', 'YYYY Q', true).isValid()).toBe(true)
+    expect(dayjs('2024 3', 'YYYY Q', true).format('YYYY-MM-DD')).toBe('2024-07-01')
+  })
+})
+
+describe('parse week of year w / ww', () => {
+  it('parses week to the first day of the week', () => {
+    // en: weeks start on Sunday and week 1 contains Jan 1st
+    expect(dayjs('2024 1', 'YYYY w').format('YYYY-MM-DD')).toBe('2024-01-01')
+    expect(dayjs('2024 2', 'YYYY w').format('YYYY-MM-DD')).toBe('2024-01-07')
+    expect(dayjs('2024 10', 'YYYY w').format('YYYY-MM-DD')).toBe('2024-03-03')
+    expect(dayjs('2024 10', 'YYYY w').day()).toBe(0)
+    expect(dayjs('2024 52', 'YYYY w').format('YYYY-MM-DD')).toBe('2024-12-22')
+  })
+
+  it('parses week according to the locale week start', () => {
+    // de / zh-cn: weeks start on Monday and week 1 contains Jan 4th
+    expect(dayjs('2024 1', 'YYYY w', 'de').format('YYYY-MM-DD')).toBe('2024-01-01')
+    expect(dayjs('2024 10', 'YYYY w', 'de').format('YYYY-MM-DD')).toBe('2024-03-04')
+    expect(dayjs('2024 10', 'YYYY w', 'de').day()).toBe(1)
+    expect(dayjs('2024 10', 'YYYY w', 'zh-cn').format('YYYY-MM-DD')).toBe('2024-03-04')
+    expect(dayjs('2023 1', 'YYYY w', 'de').format('YYYY-MM-DD')).toBe('2023-01-02')
+  })
+
+  it('parses zero-padded week ww', () => {
+    expect(dayjs('2024 01', 'YYYY ww').format('YYYY-MM-DD')).toBe('2024-01-01')
+    expect(dayjs('2024 10', 'YYYY ww').format('YYYY-MM-DD')).toBe('2024-03-03')
+    expect(dayjs('2024 5', 'YYYY ww').isValid()).toBe(false)
+  })
+
+  it('week 53 only exists in some years', () => {
+    expect(dayjs('2020 53', 'YYYY w', 'de').format('YYYY-MM-DD')).toBe('2020-12-28')
+    expect(dayjs('2020 53', 'YYYY w', 'zh-cn').format('YYYY-MM-DD')).toBe('2020-12-28')
+    // en 2020 and de / zh-cn 2024 have only 52 weeks
+    expect(dayjs('2020 53', 'YYYY w').isValid()).toBe(false)
+    expect(dayjs('2024 53', 'YYYY w', 'de').isValid()).toBe(false)
+    expect(dayjs('2024 53', 'YYYY w', 'zh-cn').isValid()).toBe(false)
+  })
+
+  it('early January may belong to the last week of the previous year cycle', () => {
+    // 2021-01-01 is in week 53 of the 2020 cycle in de / zh-cn
+    expect(dayjs('2021-01-01').locale('de').format('YYYY w')).toBe('2021 53')
+    expect(dayjs('2021 53', 'YYYY w', 'de').format('YYYY-MM-DD')).toBe('2021-01-01')
+    expect(dayjs('2021 53', 'YYYY w', 'zh-cn').format('YYYY-MM-DD')).toBe('2021-01-01')
+  })
+
+  it('out of range week returns Invalid Date in both modes', () => {
+    expect(dayjs('2024 0', 'YYYY w').isValid()).toBe(false)
+    expect(dayjs('2024 54', 'YYYY w').isValid()).toBe(false)
+    expect(dayjs('2024 0', 'YYYY w', true).isValid()).toBe(false)
+    expect(dayjs('2024 54', 'YYYY w', true).isValid()).toBe(false)
+  })
+
+  it('strict mode', () => {
+    expect(dayjs('2024 10', 'YYYY w', true).isValid()).toBe(true)
+    expect(dayjs('2024 10', 'YYYY w', true).format('YYYY-MM-DD')).toBe('2024-03-03')
+    expect(dayjs('2024 01', 'YYYY ww', true).isValid()).toBe(true)
+    // padding must match the token in strict mode
+    expect(dayjs('2024 1', 'YYYY ww', true).isValid()).toBe(false)
+    expect(dayjs('2024 01', 'YYYY w', true).isValid()).toBe(false)
+    expect(dayjs('2024 53', 'YYYY w', true).isValid()).toBe(false)
+    expect(dayjs('2024 10', 'YYYY w', 'de', true).format('YYYY-MM-DD')).toBe('2024-03-04')
+  })
+
+  it('week is ignored when month or day is also given', () => {
+    expect(dayjs('2024 10 5', 'YYYY w D').format('YYYY-MM-DD')).toBe('2024-01-05')
+    expect(dayjs('2024 10 2', 'YYYY w M').format('YYYY-MM-DD')).toBe('2024-02-01')
+    expect(dayjs('2024 2 15 10', 'YYYY M D w').format('YYYY-MM-DD')).toBe('2024-02-15')
+  })
+
+  it('week combined with time tokens', () => {
+    expect(dayjs('2024 10 13:45:30', 'YYYY w HH:mm:ss').format('YYYY-MM-DD HH:mm:ss'))
+      .toBe('2024-03-03 13:45:30')
+  })
+
+  it('round-trips a whole year in en, de and zh-cn', () => {
+    const locales = ['en', 'de', 'zh-cn']
+    const formats = ['YYYY w', 'YYYY ww', 'YYYY Q']
+    const years = [2020, 2021, 2023, 2024]
+    locales.forEach((lo) => {
+      formats.forEach((format) => {
+        years.forEach((year) => {
+          let date = dayjs(`${year}-01-01`)
+          for (let i = 0; i < 366; i += 1) {
+            const text = date.locale(lo).format(format)
+            const parsed = dayjs(text, format, lo)
+            expect(parsed.isValid()).toBe(true)
+            expect(parsed.format(format)).toBe(text)
+            expect(dayjs(text, format, lo, true).isValid()).toBe(true)
+            date = date.add(1, 'day')
+          }
+        })
+      })
+    })
+  })
+
+  it('parses w without the weekOfYear plugin loaded', () => {
+    jest.resetModules()
+    /* eslint-disable global-require */
+    const freshDayjs = require('../../src').default
+    const freshCustomParseFormat = require('../../src/plugin/customParseFormat').default
+    const freshAdvancedFormat = require('../../src/plugin/advancedFormat').default
+    /* eslint-enable global-require */
+    freshDayjs.extend(freshCustomParseFormat)
+    freshDayjs.extend(freshAdvancedFormat)
+    expect(freshDayjs('2024 10', 'YYYY w').isValid()).toBe(true)
+    expect(freshDayjs('2024 10', 'YYYY w').format('YYYY-MM-DD')).toBe('2024-03-03')
+    // strict mode can not re-format the week without weekOfYear,
+    // but it must not throw
+    expect(() => freshDayjs('2024 10', 'YYYY w', true)).not.toThrow()
+    expect(freshDayjs('2024 10', 'YYYY w', true).isValid()).toBe(false)
+  })
 })

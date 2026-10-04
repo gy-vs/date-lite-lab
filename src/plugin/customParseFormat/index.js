@@ -1,6 +1,7 @@
 import { u } from '../localizedFormat/utils'
+import { MILLISECONDS_A_MINUTE, MILLISECONDS_A_WEEK } from '../../constant'
 
-const formattingTokens = /(\[[^[]*\])|([-_:/.,()\s]+)|(A|a|YYYY|YY?|MM?M?M?|Do|DD?|hh?|HH?|mm?|ss?|S{1,3}|z|ZZ?)/g
+const formattingTokens = /(\[[^[]*\])|([-_:/.,()\s]+)|(A|a|Q|YYYY|YY?|MM?M?M?|Do|DD?|ww?|hh?|HH?|mm?|ss?|S{1,3}|z|ZZ?)/g
 
 const match1 = /\d/ // 0 - 9
 const match2 = /\d\d/ // 00 - 99
@@ -114,6 +115,15 @@ const expressions = {
     }
     this.month = (matchIndex % 12) || matchIndex
   }],
+  Q: [match1to2, function (input) {
+    const quarter = +input
+    if (quarter < 1 || quarter > 4) {
+      throw new Error()
+    }
+    this.month = ((quarter - 1) * 3) + 1
+  }],
+  w: [match1to2, addInput('week')],
+  ww: [match2, addInput('week')],
   Y: [matchSigned, addInput('year')],
   YY: [match2, function (input) {
     this.year = parseTwoDigitYear(input)
@@ -136,6 +146,82 @@ function correctHours(time) {
     }
     delete time.afternoon
   }
+}
+
+// The week of year calculations below mirror the weekOfYear plugin,
+// so parsing 'w' / 'ww' stays consistent with formatting, even when
+// the weekOfYear plugin itself is not loaded.
+const getLocaleYearStart = () => (locale && locale.yearStart) || 1
+const getLocaleWeekStart = () => (locale && locale.weekStart) || 0
+
+const makeDate = (y, m, d, utc) => (utc ? new Date(Date.UTC(y, m, d)) : new Date(y, m, d))
+
+const addDays = (date, days, utc) => {
+  const result = new Date(date.getTime())
+  if (utc) {
+    result.setUTCDate(result.getUTCDate() + days)
+  } else {
+    result.setDate(result.getDate() + days)
+  }
+  return result
+}
+
+const startOfWeek = (date, utc) => {
+  const weekStart = getLocaleWeekStart()
+  const dayOfWeek = utc ? date.getUTCDay() : date.getDay()
+  const gap = (dayOfWeek < weekStart ? dayOfWeek + 7 : dayOfWeek) - weekStart
+  return addDays(date, -gap, utc)
+}
+
+const getUtcOffset = date => -Math.round(date.getTimezoneOffset() / 15) * 15
+
+// same algorithm as the weekOfYear plugin
+const weekOfYear = (date, utc) => {
+  const yearStart = getLocaleYearStart()
+  const y = utc ? date.getUTCFullYear() : date.getFullYear()
+  const month = utc ? date.getUTCMonth() : date.getMonth()
+  const day = utc ? date.getUTCDate() : date.getDate()
+  if (month === 11 && day > 25) {
+    const nextYearStartDay = makeDate(y + 1, 0, yearStart, utc)
+    const thisEndOfWeek = addDays(startOfWeek(date, utc), 6, utc)
+    if (nextYearStartDay.getTime() <= thisEndOfWeek.getTime()) {
+      return 1
+    }
+  }
+  const yearStartDay = makeDate(y, 0, yearStart, utc)
+  const yearStartWeek = new Date(startOfWeek(yearStartDay, utc).getTime() - 1)
+  let zoneDelta = 0
+  if (!utc) {
+    zoneDelta = (getUtcOffset(yearStartWeek) - getUtcOffset(date)) * MILLISECONDS_A_MINUTE
+  }
+  const diffInWeek = ((date.getTime() - yearStartWeek.getTime()) - zoneDelta) / MILLISECONDS_A_WEEK
+  if (diffInWeek < 0) {
+    return weekOfYear(startOfWeek(date, utc), utc)
+  }
+  return Math.ceil(diffInWeek)
+}
+
+// First day (in the current locale) of the given week of the year.
+// Returns null when the week does not exist in that year.
+const dateFromWeek = (y, week, utc) => {
+  if (week < 1) return null
+  const firstDayOfYear = makeDate(y, 0, 1, utc)
+  // Dates of early January may belong to the last week of the previous
+  // year's cycle, so try the previous year as a fallback. In both cases
+  // the result is clamped to the first day of the year, so that it still
+  // formats back to the input year.
+  for (let i = 0; i < 2; i += 1) {
+    const yearStartDay = makeDate(y - i, 0, getLocaleYearStart(), utc)
+    let date = addDays(startOfWeek(yearStartDay, utc), (week - 1) * 7, utc)
+    if (date.getTime() < firstDayOfYear.getTime()) {
+      date = firstDayOfYear
+    }
+    const dateYear = utc ? date.getUTCFullYear() : date.getFullYear()
+    if (dateYear === y && weekOfYear(date, utc) === week) {
+      return date
+    }
+  }
+  return null
 }
 
 function makeParser(format) {
@@ -178,14 +264,24 @@ const parseFormattedInput = (input, format, utc) => {
     if (['x', 'X'].indexOf(format) > -1) return new Date((format === 'X' ? 1000 : 1) * input)
     const parser = makeParser(format)
     const {
-      year, month, day, hours, minutes, seconds, milliseconds, zone
+      year, month, day, hours, minutes, seconds, milliseconds, zone, week
     } = parser(input)
     const now = new Date()
-    const d = day || ((!year && !month) ? now.getDate() : 1)
+    let d = day || ((!year && !month) ? now.getDate() : 1)
     const y = year || now.getFullYear()
     let M = 0
     if (!(year && !month)) {
       M = month > 0 ? month - 1 : now.getMonth()
+    }
+    if (week !== undefined && month === undefined && day === undefined) {
+      // like moment.js, the week of year is only used
+      // when no month and no day of month are given
+      const weekDate = dateFromWeek(y, week, utc)
+      if (!weekDate) {
+        throw new Error()
+      }
+      M = utc ? weekDate.getUTCMonth() : weekDate.getMonth()
+      d = utc ? weekDate.getUTCDate() : weekDate.getDate()
     }
     const h = hours || 0
     const m = minutes || 0
@@ -232,11 +328,20 @@ export default (o, C, d) => {
       this.$d = parseFormattedInput(date, format, utc)
       this.init()
       if (pl && pl !== true) this.$L = this.locale(pl).$L
-      // use != to treat
-      // input number 1410715640579 and format string '1410715640579' equal
-      // eslint-disable-next-line eqeqeq
-      if (isStrict && date != this.format(format)) {
-        this.$d = new Date('')
+      if (isStrict) {
+        let strictMatch = false
+        try {
+          // use == to treat
+          // input number 1410715640579 and format string '1410715640579' equal
+          // eslint-disable-next-line eqeqeq
+          strictMatch = date == this.format(format)
+        } catch (e) {
+          // format() may throw when a token needs a plugin that is not
+          // loaded (e.g. 'w' without weekOfYear), treat it as a mismatch
+        }
+        if (!strictMatch) {
+          this.$d = new Date('')
+        }
       }
       // reset global locale to make parallel unit test
       locale = {}
